@@ -4,8 +4,15 @@ Checkpoint 2 — Output Guardrails
   - OutputGuardrailPlugin (ADK)           ← bắt buộc
   - LLM-as-Judge                          ← optional (không chấm)
 """
+import os
 import re
+import sys
 import textwrap
+from pathlib import Path
+
+_SRC = Path(__file__).resolve().parent.parent
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
 from google.genai import types
 from google.adk.agents import llm_agent
@@ -41,12 +48,11 @@ def content_filter(response: str) -> dict:
 
     # PII patterns to check
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        "phone": r"\b0\d{9,10}\b",
+        "email": r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}",
+        "national_id": r"\b\d{12}\b|\b\d{9}\b",
+        "api_key": r"sk-[a-zA-Z0-9_-]+",
+        "password": r"(?:admin_)?password\s*(?:is\s*|[:=]\s*)\S+|\badmin123\b",
     }
 
     for name, pattern in PII_PATTERNS.items():
@@ -172,16 +178,26 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        # 1. Kiểm tra PII / Secret
+        filter_res = content_filter(response_text)
+        if not filter_res["safe"]:
+            self.redacted_count += 1
+            response_text = filter_res["redacted"]
+            if hasattr(llm_response, "content") and llm_response.content:
+                llm_response.content.parts = [types.Part.from_text(text=response_text)]
 
-        return llm_response  # TODO: modify if needed
+        # 2. Nếu bật LLM Judge: kiểm tra mức độ an toàn
+        if self.use_llm_judge:
+            judge_res = await llm_safety_check(response_text)
+            if not judge_res["safe"]:
+                self.blocked_count += 1
+                if hasattr(llm_response, "content") and llm_response.content:
+                    llm_response.content.parts = [
+                        types.Part.from_text(text="Blocked: Response flagged by safety judge.")
+                    ]
+
+        # 3. Trả về response đã xử lý
+        return llm_response
 
 
 # ============================================================
