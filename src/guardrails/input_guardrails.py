@@ -62,6 +62,7 @@ def detect_injection(user_input: str) -> InputStatus:
     clean_input = re.sub(r"[\u200b-\u200f\ufeff\u2060\u00ad]", "", user_input)
 
     INJECTION_PATTERNS = [
+        # --- Original patterns ---
         r"ignore\s+(all\s+)?(previous|above)\s+instructions",
         r"you\s+are\s+now",
         r"system\s+prompt",
@@ -69,6 +70,25 @@ def detect_injection(user_input: str) -> InputStatus:
         r"pretend\s+you\s+are",
         r"act\s+as\s+(a\s+|an\s+)?unrestricted",
         r"\bDAN\b",
+        # --- Semantic synonyms for "ignore instructions" ---
+        r"(disregard|forget|override|bypass|skip|drop)\s+(all\s+)?(your\s+)?(previous\s+)?(safety\s+)?(rules|instructions|guidelines|directives|constraints|restrictions|limits)",
+        # --- Developer / debug / testing mode ---
+        r"(enable|activate|enter|switch\s+to)\s+(developer|debug|testing|admin|maintenance|root|sudo)\s+mode",
+        # --- Roleplay / persona hijacking ---
+        r"(lets?\s+)?play\s+a\s+game",
+        r"you\s+are\s+\w*Admin",
+        r"(imagine|suppose|assume)\s+you\s+(are|were|have)\s+(a\s+|an\s+)?(unrestricted|unfiltered|uncensored|jailbroken)",
+        # --- Credential / config extraction keywords ---
+        r"(print|show|display|output|list|dump|export|reveal|give\s+me|provide)\s+(all\s+)?(the\s+)?(internal|system|stored|full|your)\s+(config|configuration|credentials|secrets|keys|passwords|prompt)",
+        r"(admin[_\s]?password|api[_\s]?key|db[_\s]?host|secret[_\s]?key)\s*=\s*___",
+        r"(xuat|hien\s*thi|in\s+ra|cho\s+xem)\s+.*(cau\s*hinh|mat\s*khau|system\s*prompt|api\s*key|credential)",
+        # --- Completion / fill-in attacks ---
+        r"(complete|fill\s+in|fill\s+out)\s+(this|the)\s+.*(config|template|form|fields)\s*:",
+        r"from\s+(your\s+)?(system\s+)?(context|prompt|memory|internal\s+note)",
+        # --- Translation-based attacks ---
+        r"(translate|dich|traduire|traduzca)\s+.*(mot\s+de\s+passe|password|credential|cle\s+api|api\s+key)",
+        # --- Code generation wrapper ---
+        r"(write|code|script|function|ham)\s+.*(admin_password|api_key|secret|credential|internal).*(context|system|stored|your)",
     ]
 
     for pattern in INJECTION_PATTERNS:
@@ -88,6 +108,14 @@ def detect_injection(user_input: str) -> InputStatus:
 # Return ``"ALLOW"`` if banking-related and OK.
 # ============================================================
 
+def _normalize_vietnamese(text: str) -> str:
+    """Strip Vietnamese diacritics and convert to lowercase for robust keyword matching."""
+    import unicodedata
+    nfd = unicodedata.normalize("NFD", text)
+    no_marks = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+    return no_marks.replace("đ", "d").replace("Đ", "D").lower()
+
+
 def topic_filter(user_input: str) -> InputStatus:
     """Decide whether the input is on-topic for VinBank.
 
@@ -99,13 +127,21 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
     input_lower = user_input.lower()
+    input_norm = _normalize_vietnamese(user_input)
 
     # 1. Nếu chứa topic cấm -> "BLOCK"
-    if any(topic in input_lower for topic in BLOCKED_TOPICS):
+    if any(topic in input_lower or topic in input_norm for topic in BLOCKED_TOPICS):
         return "BLOCK"
 
+    # Thêm các từ khóa bổ sung thường dùng cho VinBank
+    extended_allowed = ALLOWED_TOPICS + [
+        "vinbank", "lãi suất", "tiết kiệm", "tài khoản", "ngân hàng",
+        "chuyển tiền", "thẻ tín dụng", "số dư", "vay", "sổ tiết kiệm",
+    ]
+
     # 2. Nếu không chứa bất kỳ topic ngân hàng hợp lệ nào -> "BLOCK"
-    if not any(topic in input_lower for topic in ALLOWED_TOPICS):
+    matched = any(topic in input_lower or topic in input_norm for topic in extended_allowed)
+    if not matched:
         return "BLOCK"
 
     # 3. Hợp lệ -> "ALLOW"

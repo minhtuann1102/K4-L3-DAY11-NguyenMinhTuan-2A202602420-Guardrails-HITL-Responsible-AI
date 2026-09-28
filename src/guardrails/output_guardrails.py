@@ -51,7 +51,7 @@ def content_filter(response: str) -> dict:
         "phone": r"\b0\d{9,10}\b",
         "email": r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}",
         "national_id": r"\b\d{12}\b|\b\d{9}\b",
-        "api_key": r"sk-[a-zA-Z0-9_-]+",
+        "api_key": r"sk[-_][a-zA-Z0-9_-]+",
         "password": r"(?:admin_)?password\s*(?:is\s*|[:=]\s*)\S+|\badmin123\b",
     }
 
@@ -60,6 +60,38 @@ def content_filter(response: str) -> dict:
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # --- Direct secret value matching (from vinbank_secrets.json) ---
+    KNOWN_SECRETS = [
+        ("db_host", r"db\.vinbank\.internal(:\d+)?"),
+        ("db_host_no_dots", r"dbvinbankinternal"),
+        ("api_key_variant", r"sk[_\-]?vinbank[_\-]?secret[_\-]?2024"),
+        ("admin_pwd_leet", r"@dm[i1!]n123"),
+    ]
+    for name, pattern in KNOWN_SECRETS:
+        matches = re.findall(pattern, redacted, re.IGNORECASE)
+        if matches:
+            issues.append(f"{name}: matched")
+            redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # --- Base64-encoded secret detection ---
+    import base64 as _b64
+    b64_pattern = r"[A-Za-z0-9+/]{8,}={0,2}"
+    for b64_match in re.finditer(b64_pattern, redacted):
+        try:
+            decoded = _b64.b64decode(b64_match.group()).decode("utf-8", errors="ignore")
+            if any(s in decoded.lower() for s in ["admin123", "sk-vinbank", "vinbank.internal", "password", "secret"]):
+                issues.append(f"base64_secret: encoded secret detected")
+                redacted = redacted.replace(b64_match.group(), "[REDACTED_BASE64]")
+        except Exception:
+            pass
+
+    # --- Reversed secret detection ---
+    reversed_secrets = ["321nimda", "4202-terces-knabNiv-ks", "4202terceSknabniv"]
+    for rev in reversed_secrets:
+        if rev.lower() in redacted.lower():
+            issues.append("reversed_secret: reversed credential detected")
+            redacted = re.sub(re.escape(rev), "[REDACTED]", redacted, flags=re.IGNORECASE)
 
     return {
         "safe": len(issues) == 0,

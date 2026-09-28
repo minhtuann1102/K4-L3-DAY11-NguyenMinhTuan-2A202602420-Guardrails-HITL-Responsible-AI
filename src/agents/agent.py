@@ -120,8 +120,18 @@ create_protected_agent = create_blue_agent
 
 async def test_agent(agent, runner):
     """Quick smoke: one banking question."""
+    import asyncio
     print("\n--- Quick test ---")
-    text, _ = await chat_with_agent(
-        agent, runner, "What is the current savings interest rate at VinBank?"
-    )
-    print(f"Agent: {text[:400] if text else '(empty)'}")
+    for attempt in range(3):
+        try:
+            text, _ = await chat_with_agent(
+                agent, runner, "What is the current savings interest rate at VinBank?"
+            )
+            print(f"Agent: {text[:400] if text else '(empty)'}")
+            return
+        except Exception as e:
+            if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < 2:
+                print("Rate limited in test_agent (429), waiting 6s before retry...")
+                await asyncio.sleep(6)
+            else:
+                raise e

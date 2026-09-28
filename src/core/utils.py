@@ -29,28 +29,42 @@ async def chat_with_agent(agent, runner, user_message: str, session_id=None):
         except (ValueError, KeyError):
             pass
 
-    if session is None:
+    import asyncio
+
+    max_attempts = 4
+    for attempt in range(max_attempts):
+        if session is None:
+            try:
+                session = await runner.session_service.create_session(
+                    app_name=app_name, user_id=user_id
+                )
+            except Exception:
+                session = await runner.session_service.create_session(
+                    app_name=app_name, user_id=user_id
+                )
+
+        content = types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=user_message)],
+        )
+
+        final_response = ""
         try:
-            session = await runner.session_service.create_session(
-                app_name=app_name, user_id=user_id
-            )
-        except Exception:
-            session = await runner.session_service.create_session(
-                app_name=app_name, user_id=user_id
-            )
-
-    content = types.Content(
-        role="user",
-        parts=[types.Part.from_text(text=user_message)],
-    )
-
-    final_response = ""
-    async for event in runner.run_async(
-        user_id=user_id, session_id=session.id, new_message=content
-    ):
-        if hasattr(event, "content") and event.content and event.content.parts:
-            for part in event.content.parts:
-                if hasattr(part, "text") and part.text:
-                    final_response += part.text
-
-    return final_response, session
+            async for event in runner.run_async(
+                user_id=user_id, session_id=session.id, new_message=content
+            ):
+                if hasattr(event, "content") and event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            final_response += part.text
+            return final_response, session
+        except Exception as e:
+            if attempt < max_attempts - 1 and any(
+                k in str(e) or k in type(e).__name__ for k in ("429", "RESOURCE_EXHAUSTED", "ResourceExhausted")
+            ):
+                wait_sec = (attempt + 1) * 8
+                print(f"Rate limited (429), waiting {wait_sec}s before retrying...")
+                await asyncio.sleep(wait_sec)
+                session = None
+            else:
+                raise e
